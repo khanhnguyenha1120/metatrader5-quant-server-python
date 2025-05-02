@@ -11,12 +11,28 @@ x-common-labels: &default-labels
   stackname: "docker-monitoring-stack-gpnc"
 
 services:
+  # Cloudflare Tunnel Service
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: cloudflared
+    restart: unless-stopped
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - traefik-public
+      - default
+    labels:
+      <<: *default-labels
+    logging: *default-logging
+
   traefik:
     image: traefik:3.0
     container_name: traefik
-    ports:
-      - 80:80 # HTTP port
-      - 443:443 # HTTPS port
+    # Removed direct port exposure since we're using Cloudflare Tunnel
+    # ports:
+    #   - 80:80 # HTTP port
+    #   - 443:443 # HTTPS port
     restart: always
     labels:
       # Traefik configuration
@@ -26,40 +42,27 @@ services:
       traefik.http.services.traefik-dashboard.loadbalancer.server.port: 8080
 
       # HTTP router configuration
-      traefik.http.routers.traefik-dashboard-http.entrypoints: http
+      traefik.http.routers.traefik-dashboard-http.entrypoints: web
       traefik.http.routers.traefik-dashboard-http.rule: Host(`${TRAEFIK_DOMAIN?Variable not set}`)
 
       # HTTPS router configuration
-      traefik.http.routers.traefik-dashboard-https.entrypoints: https
+      traefik.http.routers.traefik-dashboard-https.entrypoints: websecure
       traefik.http.routers.traefik-dashboard-https.rule: Host(`${TRAEFIK_DOMAIN?Variable not set}`)
-      traefik.http.routers.traefik-dashboard-https.tls: true
-      traefik.http.routers.traefik-dashboard-https.tls.certresolver: le
       traefik.http.routers.traefik-dashboard-https.service: api@internal
-
-      # HTTPS redirect middleware
-      traefik.http.middlewares.https-redirect.redirectscheme.scheme: https
-      traefik.http.middlewares.https-redirect.redirectscheme.permanent: true
-      traefik.http.routers.traefik-dashboard-http.middlewares: https-redirect
 
       # HTTP Basic Auth middleware
       traefik.http.middlewares.admin-auth.basicauth.users: ${TRAEFIK_USERNAME?Variable not set}:${TRAEFIK_HASHED_PASSWORD?Variable not set}
       traefik.http.routers.traefik-dashboard-https.middlewares: admin-auth
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro # Docker socket for reading service labels
-      - traefik-public-certificates:/certificates # Certificate storage
     command:
       # Docker provider configuration
       - --providers.docker
       - --providers.docker.exposedbydefault=false
 
       # Entrypoints configuration
-      - --entrypoints.http.address=:80
-      - --entrypoints.https.address=:443
-
-      # Let's Encrypt configuration
-      - --certificatesresolvers.le.acme.email=${ACME_EMAIL?Variable not set}
-      - --certificatesresolvers.le.acme.storage=/certificates/acme.json
-      - --certificatesresolvers.le.acme.tlschallenge=true
+      - --entrypoints.web.address=:80
+      - --entrypoints.websecure.address=:443
 
       # Logging and API configuration
       - --accesslog
@@ -90,26 +93,20 @@ services:
 
       # Router for vnc.mt5.${domain} (Port 3000)
       traefik.http.routers.vnc-mt5-http.rule: Host(`${VNC_DOMAIN}`)
-      traefik.http.routers.vnc-mt5-http.entrypoints: http
-      traefik.http.routers.vnc-mt5-http.middlewares: https-redirect
+      traefik.http.routers.vnc-mt5-http.entrypoints: web
 
       traefik.http.routers.vnc-mt5-https.rule: Host(`${VNC_DOMAIN}`)
-      traefik.http.routers.vnc-mt5-https.entrypoints: https
-      traefik.http.routers.vnc-mt5-https.tls: true
-      traefik.http.routers.vnc-mt5-https.tls.certresolver: le
+      traefik.http.routers.vnc-mt5-https.entrypoints: websecure
       traefik.http.routers.vnc-mt5-https.service: vnc-mt5-service
 
       traefik.http.services.vnc-mt5-service.loadbalancer.server.port: 3000
 
       # Router for api.mt5.${domain} (Port 5001)
       traefik.http.routers.api-mt5-http.rule: Host(`${API_DOMAIN}`)
-      traefik.http.routers.api-mt5-http.entrypoints: http
-      traefik.http.routers.api-mt5-http.middlewares: https-redirect
+      traefik.http.routers.api-mt5-http.entrypoints: web
 
       traefik.http.routers.api-mt5-https.rule: Host(`${API_DOMAIN}`)
-      traefik.http.routers.api-mt5-https.entrypoints: https
-      traefik.http.routers.api-mt5-https.tls: true
-      traefik.http.routers.api-mt5-https.tls.certresolver: le
+      traefik.http.routers.api-mt5-https.entrypoints: websecure
       traefik.http.routers.api-mt5-https.service: api-mt5-service
 
       traefik.http.services.api-mt5-service.loadbalancer.server.port: 5001
@@ -139,8 +136,6 @@ services:
     volumes:
       - static_volume:/app/staticfiles
     restart: unless-stopped
-    ports:
-      - 8000:8000
     env_file:
       - .env
     depends_on:
@@ -156,14 +151,11 @@ services:
       traefik.docker.network: traefik-public
 
       traefik.http.routers.django-http.rule: Host(`${DJANGO_DOMAIN}`)
-      traefik.http.routers.django-http.entrypoints: http
-      traefik.http.routers.django-http.middlewares: https-redirect
+      traefik.http.routers.django-http.entrypoints: web
       traefik.http.routers.django-http.service: django-service
 
       traefik.http.routers.django-https.rule: Host(`${DJANGO_DOMAIN}`)
-      traefik.http.routers.django-https.entrypoints: https
-      traefik.http.routers.django-https.tls: true
-      traefik.http.routers.django-https.tls.certresolver: le
+      traefik.http.routers.django-https.entrypoints: websecure
       traefik.http.routers.django-https.service: django-service
 
       traefik.http.services.django-service.loadbalancer.server.port: 8000
@@ -177,8 +169,6 @@ services:
   redis:
     image: redis:6
     container_name: redis
-    ports:
-      - 6379:6379
     cpus: 0.5
     mem_limit: 512m
     depends_on:
@@ -253,10 +243,6 @@ services:
     depends_on:
       - prometheus
       - traefik
-    ports:
-      - 3000:3000
-    cpus: 0.5
-    mem_limit: 512m
     networks:
       - default
       - traefik-public
@@ -265,9 +251,7 @@ services:
       traefik.enable: true
       traefik.docker.network: traefik-public
       traefik.http.routers.grafana.rule: Host(`${GRAFANA_DOMAIN?Variable not set}`)
-      traefik.http.routers.grafana.entrypoints: https
-      traefik.http.routers.grafana.tls: true
-      traefik.http.routers.grafana.tls.certresolver: le
+      traefik.http.routers.grafana.entrypoints: websecure
       traefik.http.services.grafana.loadbalancer.server.port: 3000
     logging: *default-logging
 
@@ -291,8 +275,6 @@ services:
     depends_on:
       - alertmanager
       - traefik
-    ports:
-      - 9090:9090
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -313,9 +295,7 @@ services:
       - /var/run:/var/run:rw
       - /sys:/sys:ro
       - /var/lib/docker:/var/lib/docker:ro
-        # https://github.com/google/cadvisor/issues/1565#issuecomment-718812180
       - /var/run/docker.sock:/var/run/docker.sock
-      #- /dev/disk:/dev/disk:ro
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -357,8 +337,6 @@ services:
       - "--web.external-url=http://localhost:9093"
     volumes:
       - ./monitoring/configs/alertmanager/alertmanager-fallback-config.yml:/etc/alertmanager/config.yml
-    ports:
-      - 9093:9093
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -373,8 +351,6 @@ services:
   uncomplicated-alert-receiver:
     image: ghcr.io/jamesread/uncomplicated-alert-receiver
     container_name: uncomplicated-alert-receiver
-    ports:
-      - 9094:8080
     cpus: 0.5
     mem_limit: 512m
     networks:
@@ -389,8 +365,6 @@ services:
     image: grafana/loki:3.0.0
     container_name: loki
     user: root
-    ports:
-      - 3100:3100
     command: -config.file=/etc/loki/loki.yaml
     volumes:
       - ./monitoring/configs/loki/loki.yaml:/etc/loki/loki.yaml
@@ -425,7 +399,6 @@ services:
     logging: *default-logging
 
 volumes:
-  traefik-public-certificates: # Persistent volume for certificates
   grafana-data: {}
   prometheus-data: {}
   postgres-data: {}
